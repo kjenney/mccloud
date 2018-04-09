@@ -6,7 +6,7 @@ Uses Terraform, Ansible, and a host of other tools to make life easier.
 
 Config is pulled from config.json in the working directory. Here's a sample config file:
 
-{
+```{
   "BINPATH": "/mystuff/.env/bin",
   "ANSIBLEPATH": "/mystuff/ansible-repo",
   "IACPATH": "/mystuff/iac_example",
@@ -18,5 +18,6 @@ Config is pulled from config.json in the working directory. Here's a sample conf
     "qa": "qa-state"
   }
 }
+```
 
 State refers to the S3 bucket names

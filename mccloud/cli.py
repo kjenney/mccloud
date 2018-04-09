@@ -3,19 +3,36 @@ import json
 
 from mccloud.tools import *
 from mccloud.version import VERSION
-import mccloud.constants
+from mccloud.constants import *
+
+config = read_config()
 
 @click.group()
 @click.option('--verbose', is_flag=True)
 @click.option('--env',
-              help='This is the Terraform environment to grab the inventory from.')
+              help='This is the Terraform environment to grab the inventory from.', default='none')
+@click.option('--config', default=config)
 @click.pass_context
-def main(ctx, verbose, env):
-    if verbose:
-        ctx.obj['VERBOSE'] = verbose
-        click.echo('We are in verbose mode')
-    if env:
-        ctx.obj['ENV'] = env
+def main(ctx, verbose, env, config):
+    if config:
+      ctx.obj['CONFIG'] = config
+      iacpath = ctx.obj['CONFIG']['IACPATH']
+      if verbose:
+          ctx.obj['VERBOSE'] = True
+          click.echo('------- We are in verbose mode -------\n')
+      else:
+          ctx.obj['VERBOSE'] = False
+      if env:
+          c = Cloudy(config, env, ctx.obj['VERBOSE'])
+          if c.verify_env():
+              ctx.obj['ENV'] = env
+          else:
+              print('Invalid Environment')
+              exit()
+      ctx.obj['CLOUD'] = c
+    else:
+      click.echo('Config file required!!!')
+      exit()
 
 @main.command()
 @click.pass_context
@@ -41,14 +58,13 @@ def ansible(ctx, playbook, host, cmd):
 @click.option('--destroy', is_flag=True)
 def terraform(ctx, destroy):
     """This option provisions resources using Terraform"""
-    env = ctx.obj['ENV']
-
+    c = ctx.obj['CLOUD']
     if destroy:
-      print('Destroying with Terraform')
-      terraform_destroy(env)
+      click.echo('------- Destroying with Terraform -------\n')
+      c.terraform_destroy()
     else:
-      print('Deploying to Terraform')
-      terraform_deploy(env)
+      click.echo('------- Deploying with Terraform -------\n')
+      c.terraform_deploy()
 
 @main.command()
 @click.pass_context
@@ -63,9 +79,10 @@ def packer(ctx):
 
 
 @main.command()
-def setup():
+@click.pass_context
+def setup(ctx):
     """This option grabs all of the required tools that aren't on Pip"""
-    install_tools(mccloud.constants.BINPATH)
+    ctx.obj['CLOUD'].install_tools()
 
 @main.command()
 @click.option('--dir',

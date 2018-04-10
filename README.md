@@ -10,7 +10,6 @@ Config is pulled from config.json in the working directory. All secrets are in t
   "BINPATH": "/mystuff/.env/bin",
   "ANSIBLEPATH": "/mystuff/ansible-repo",
   "IACPATH": "/mystuff/iac_example",
-  "SECRETS": "/mystuff/secrets",
   "TMPPATH": "/tmp",
   "STATE": {
     "prod": "prod-state",

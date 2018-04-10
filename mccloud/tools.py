@@ -65,7 +65,9 @@ class Cloudy:
     def subp(self, command):
         """ Shortcut for subprocess """
         self.vprint('\tLaunching: ' + command)
-        ret = subprocess.call(command, shell=True)
+        output = subprocess.check_output(command, stderr=subprocess.STDOUT, shell=True)
+        #output = proc.stderr.read()
+        self.vprint(output)
 
     def download_file(self, url, file_name):
         """ Download a file from the web """
@@ -110,7 +112,7 @@ class Cloudy:
         response = exists('terraform/' + self.env + '/terraform.tfstate')
 
         if response == True:
-            ret = subprocess.call('cd ansible && ansible-playbook playbooks/' + playbook + '.yml -i inventory/terraform -e "ansible_ssh_user=' + ssh_user + '" --private-key ../terraform/' + self.env + '/id_rsa', shell=True)
+            self.subp('cd ansible && ansible-playbook playbooks/' + playbook + '.yml -i inventory/terraform -e "ansible_ssh_user=' + ssh_user + '" --private-key ../terraform/' + self.env + '/id_rsa')
         else:
             print("Path not found:" + 'terraform/' + self.env + '/terraform.tfstate')
 
@@ -131,8 +133,7 @@ class Cloudy:
         response = exists('terraform/' + self.env + '/terraform.tfstate')
 
         if response == True:
-            ret = subprocess.call('cd ansible && ansible ' + host + ' -a "' + cmd + '" -u ' + ssh_user + ' -i inventory/terraform  --private-key ../terraform/' + env + '/id_rsa', shell=True)
-            
+            self.subp('cd ansible && ansible ' + host + ' -a "' + cmd + '" -u ' + ssh_user + ' -i inventory/terraform  --private-key ../terraform/' + env + '/id_rsa')            
         else:
             print("Path not found: " + 'terraform/' + self.env + '/terraform.tfstate')
 
@@ -209,6 +210,16 @@ class Cloudy:
         for d in include_dirs:
             self.terraform_copy_folder_files(self.iacpath + '/terraform/resources/' + d, self.tmppath)
 
+    def terraform_prep(self):
+        self.vprint('\tRemote state: ' + self.remotestate)
+        include_dirs = self.parse_vars()
+        home_ip = self.get_home_ip()
+        self.terraform_merge_env_and_secrets()
+        self.terraform_pull_state()
+        self.terraform_copy_resources(include_dirs)
+        os.chdir(self.tmppath)
+        return home_ip
+
     def terraform_deploy(self):
         """
         Deploy using Terraform 
@@ -217,17 +228,12 @@ class Cloudy:
 
         Remote state is pulled from S3
         """
-        self.vprint('\tRemote state: ' + self.remotestate)
-        include_dirs = self.parse_vars()
-        home_ip = self.get_home_ip()
-        self.terraform_merge_env_and_secrets()
-        self.terraform_pull_state()
-        self.terraform_copy_resources(include_dirs)
-        os.chdir(self.tmppath)
+        home_ip = self.terraform_prep()
         self.subp("terraform init -var 'home_ip=" + home_ip + "'")
         self.subp("terraform plan -var 'home_ip=" + home_ip + "'")
         self.subp("terraform apply --auto-approve -var 'home_ip=" + home_ip + "'")
         self.terraform_push_state()
+        print('------- Deploy Complete -------')
 
     # Terraform destroys combine resources with environment definitions to build out environments
     def terraform_destroy(self):
@@ -238,16 +244,11 @@ class Cloudy:
 
         Remote state is pulled from S3
         """
-        self.vprint('\tRemote state: ' + self.remotestate)
-        include_dirs = self.parse_vars()
-        home_ip = self.get_home_ip()
-        self.terraform_merge_env_and_secrets()
-        self.terraform_pull_state()
-        self.terraform_copy_resources(include_dirs)
-        os.chdir(self.tmppath)
+        home_ip = self.terraform_prep()
         self.subp("terraform init -var 'home_ip=" + home_ip + "'")
         self.subp("terraform destroy -auto-approve -var 'home_ip=" + home_ip + "'")
         self.terraform_push_state()
+        print('------- Destroy Complete -------')
 
     def build_scaffold(self, dir):
         print('Building Scaffold in: %s' % dir)

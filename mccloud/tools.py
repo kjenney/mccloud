@@ -33,10 +33,14 @@ class Cloudy:
         self.verbose = verbose
         self.iacpath = config['IACPATH']
         self.binpath = config['BINPATH']
-        self.secrets = config['SECRETS']
+        self.privatekey = config['PRIVATEKEY']
+        self.publickey = config['PUBLICKEY']
+        self.vaultpassword = config['VAULTPASSWORD']
         self.tmppath = config['TMPPATH'] + '/' + env
         if self.env != 'none':
-            self.remotestate = config['STATE'][env]
+            self.statebucket = config['STATE'][env]
+            self.statefile = 'terraform.tfstate'
+            self.s3 = boto3.resource('s3')
         self.tpath = self.iacpath + '/terraform/live/' + self.env
 
     def verify_env(self):
@@ -47,7 +51,12 @@ class Cloudy:
             return True
         return False
 
-    def parse_vars(self):
+    def write_variable_to_file(self, var, filename):
+        f = open(filename, 'w' )
+        f.write(var + '\n')
+        f.close()
+
+    def parse_directories(self):
         """ Returns an array of directories to include in Terraform deploy """
         file = self.tpath + '/terraform.tfvars'
         with open(file, "r") as f:
@@ -56,6 +65,16 @@ class Cloudy:
                     dirs = line.split("=")[1].strip()
                     dircsv = re.sub('["]', '', dirs)
         return dircsv.split(',')
+
+    def parse_region(self):
+        """ Returns the region for the current environment """
+        file = self.tpath + '/terraform.tfvars'
+        with open(file, "r") as f:
+            for line in f:
+                if 'aws_region' in line:
+                    region = line.split("=")[1].strip()
+                    region = region.replace('"', '')
+        return region
 
     def vprint(self, mystring):
         """ Verbose printing """
@@ -101,8 +120,20 @@ class Cloudy:
             return False
         return True
 
-    def packer_deploy(self):
-        print('Works on the ' + self.env + ' environment!')
+    def packer_list(self):
+        """This option lists the available AMI resources to build"""
+        print("Available AMI's to build:")
+        for f_name in glob.glob(self.iacpath + '/packer/*.json'):
+            base = os.path.basename(f_name)
+            resource = os.path.splitext(base)[0]
+            print('\t' + resource)
+
+    def packer_deploy(self, ami):
+        """This option provisions AMI images with Packer and Ansible"""
+        print('Deploying Packer on the ' + self.env + ' environment!')
+        os.chdir(self.iacpath + '/packer')
+        region = self.parse_region()
+        self.subp('packer build -var region=' + region + ' ' + ami + '.json')
 
     def ansible_deploy(self, playbook):
         ssh_user = 'centos'
@@ -165,24 +196,37 @@ class Cloudy:
         self.vprint('\tMerge environment and secrets')
         self.recreate_dir(self.tmppath)
         shutil.copyfile(self.tpath + '/terraform.tfvars', self.tmppath + '/terraform.tfvars')
-        shutil.copyfile(self.secrets + '/id_rsa.pub', self.tmppath + '/id_rsa.pub')
-        shutil.copyfile(self.secrets + '/vault_password_file', self.tmppath + '/vault_password_file')
+        self.write_variable_to_file(self.publickey, self.tmppath + '/id_rsa.pub')
+        #shutil.copyfile(self.secrets + '/id_rsa.pub', self.tmppath + '/id_rsa.pub')
+        self.write_variable_to_file(self.vaultpassword, self.tmppath + '/vault_password_file')
+        #shutil.copyfile(self.secrets + '/vault_password_file', self.tmppath + '/vault_password_file')
+        self.write_variable_to_file(self.privatekey, self.tmppath + '/id_rsa')
+
+    def terraform_create_bucket(self):
+        """ Create an S3 bucket - in case it doesn't exist"""
+        try:
+            self.s3.create_bucket(Bucket=self.statebucket)
+        except botocore.exceptions.ClientError as e:
+            if e.response['Error']['Code'] == '404':
+                self.vprint('\t\tNo state file found.')
+            elif e.response['Error']['Code'] == '403':
+                self.vprint('\t\tS3 Bucket Permissions error.')
+                exit()
+            else:
+                raise
 
     def terraform_pull_state(self):
         """ Pull a state file from S3 """
         self.vprint('\tPull remote state')
 
-        bucket = self.remotestate
-        file = 'terraform.tfstate'
-
-        s3 = boto3.resource('s3')
-
         try:
-            s3.Bucket(bucket).download_file(file, self.tmppath + '/' + file)
+            self.s3.Bucket(self.statebucket).download_file(self.statefile, self.tmppath + '/' + self.statefile)
         except botocore.exceptions.ClientError as e:
             if e.response['Error']['Code'] == '404':
-                if self.verbose:
-                    print('\t\tNo state file found.')
+                self.vprint('\t\tNo state file found.')
+            elif e.response['Error']['Code'] == '403':
+                self.vprint('\t\tNo bucket found. Creating it.')
+                self.terraform_create_bucket
             else:
                 raise
 
@@ -190,13 +234,8 @@ class Cloudy:
         """ Push the current state file to S3 """
         self.vprint('\tPush current state to S3')
 
-        bucket = self.remotestate
-        file = 'terraform.tfstate'
-
-        s3 = boto3.resource('s3')
-
         try:
-            s3.Bucket(bucket).upload_file(self.tmppath + '/' + file, file)
+            self.s3.Bucket(self.statebucket).upload_file(self.tmppath + '/' + self.statefile, self.statefile)
         except botocore.exceptions.ClientError as e:
             if e.response['Error']['Code'] == '404':
                 if self.verbose:
@@ -211,8 +250,8 @@ class Cloudy:
             self.terraform_copy_folder_files(self.iacpath + '/terraform/resources/' + d, self.tmppath)
 
     def terraform_prep(self):
-        self.vprint('\tRemote state: ' + self.remotestate)
-        include_dirs = self.parse_vars()
+        self.vprint('\tRemote state: ' + self.statebucket)
+        include_dirs = self.parse_directories()
         home_ip = self.get_home_ip()
         self.terraform_merge_env_and_secrets()
         self.terraform_pull_state()

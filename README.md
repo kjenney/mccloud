@@ -4,7 +4,7 @@ A tool to administer AWS...
 
 Uses Terraform, Ansible, and a host of other tools to make life easier.
 
-Config is pulled from config.json in the working directory. Here's a sample config file:
+Config is pulled from config.json in the working directory. All secrets are in this file. It should NOT be checked into git.
 
 ```{
   "BINPATH": "/mystuff/.env/bin",
@@ -16,8 +16,13 @@ Config is pulled from config.json in the working directory. Here's a sample conf
     "prod": "prod-state",
     "stage": "stage-state",
     "qa": "qa-state"
-  }
+  },
+  "VAULTPASSWORD": "myvaultpassword",
+  "PRIVATE_KEY": "-----BEGIN RSA PRIVATE KEY-----\n..."
+  "PUBLIC_KEY": "-----BEGIN RSA PUBLIC KEY-----\n..."
 }
 ```
 
-State refers to the S3 bucket names
+State refers to the S3 bucket names.
+Private and public keys are used for the AWS key pair.
+Vault Password will be used to deccrypt Ansible secrets.

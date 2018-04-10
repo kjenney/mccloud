@@ -16,7 +16,6 @@ config = read_config()
 def main(ctx, verbose, env, config):
     if config:
       ctx.obj['CONFIG'] = config
-      iacpath = ctx.obj['CONFIG']['IACPATH']
       if verbose:
           ctx.obj['VERBOSE'] = True
           click.echo('------- We are in verbose mode -------\n')
@@ -68,15 +67,21 @@ def terraform(ctx, destroy):
 
 @main.command()
 @click.pass_context
-def packer(ctx):
+@click.option('--ami',
+              help='The name of the AMI resource.', default='none')
+@click.option('--list',
+              help='List AMI resources.', is_flag=True)
+def packer(ctx, ami, list):
     """This option provisions AMI images with Packer and Ansible"""
-    env = ctx.obj['ENV']
-
-    if env is None:
-      print("Environment is required")
+    c = ctx.obj['CLOUD']
+    if list:
+      c.packer_list()
       exit()
-    packer_deploy(env)
-
+    env = ctx.obj['ENV']
+    if env == 'none' or ami == 'none':
+      print('Packer requires an environment and an ami!')
+      exit()
+    c.packer_deploy(ami)
 
 @main.command()
 @click.pass_context

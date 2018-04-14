@@ -25,29 +25,37 @@ class Cloudy:
     This allows us to pass all our environment variables and
     make them available to all of the methods
 
+    env, verbose are set by clicks multichain
+
     """
 
-    def __init__(self, config, env, verbose):
+    def __init__(self, config):
         self.config = config
-        self.env = env
-        self.verbose = verbose
         self.iacpath = config['IACPATH']
         self.binpath = config['BINPATH']
+        self.ansiblepath = config['ANSIBLEPATH']
         self.privatekey = config['PRIVATEKEY']
         self.publickey = config['PUBLICKEY']
         self.vaultpassword = config['VAULTPASSWORD']
-        self.tmppath = config['TMPPATH'] + '/' + env
-        if self.env != 'none':
-            self.statebucket = config['STATE'][env]
-            self.statefile = 'terraform.tfstate'
-            self.s3 = boto3.resource('s3')
-        self.tpath = self.iacpath + '/terraform/live/' + self.env
+        self.directorypassword = config['DIRECTORYPASSWORD']
+        self.livepath = ''
+        self.tmppath = ''
+        self.verbose = ''
+        self.ami = ''
+        self.hostname = ''
 
     def verify_env(self):
         """Return True if env path exists."""
+        self.livepath = self.iacpath + '/terraform/live/' + self.env
+        self.tmppath = self.config['TMPPATH'] + '/' + self.env
         if self.env != 'none':
-            self.vprint('\tEnvironment path: ' + self.tpath + '\n')
-        if self.env == 'none' or self.exists(self.tpath):
+            self.vprint('\tEnvironment path:' + self.livepath + '\n')
+            self.region = self.parse_region()
+            self.statebucket = self.config['STATE'][self.env]
+            self.statefile = 'terraform.tfstate'
+            self.s3 = boto3.resource('s3')
+            self.ec2 = boto3.resource('ec2', region_name = self.region)
+        if self.env == 'none' or self.exists(self.livepath):
             return True
         return False
 
@@ -58,7 +66,7 @@ class Cloudy:
 
     def parse_directories(self):
         """ Returns an array of directories to include in Terraform deploy """
-        file = self.tpath + '/terraform.tfvars'
+        file = self.livepath + '/terraform.tfvars'
         with open(file, "r") as f:
             for line in f:
                 if 'include' in line:
@@ -68,7 +76,7 @@ class Cloudy:
 
     def parse_region(self):
         """ Returns the region for the current environment """
-        file = self.tpath + '/terraform.tfvars'
+        file = self.livepath + '/terraform.tfvars'
         with open(file, "r") as f:
             for line in f:
                 if 'aws_region' in line:
@@ -120,6 +128,33 @@ class Cloudy:
             return False
         return True
 
+    def get_instance_from_tag(self, vpc, tag):
+        vpc = self.ec2.Vpc(vpc)
+        filters = [{'Name':'tag:group', 'Values':[tag]}]
+        instances = vpc.instances.filter(Filters=filters)
+        for instance in instances:
+            return instance
+
+    def get_public_ip_from_instance(self, instance):
+        return instance.public_ip_address
+
+    def get_vpc_id(self):
+        filters = [{'Name':'tag:Name', 'Values':['terraform*']}]
+        vpcs = self.ec2.vpcs.filter(Filters=filters)
+        for vpc in vpcs:
+            return vpc.id
+        
+    def connect(self):
+        vpc = self.get_vpc_id()
+        if vpc:
+            instance = self.get_instance_from_tag(vpc, self.hostname)
+            public_ip = self.get_public_ip_from_instance(instance)
+            print('Connect to ' + host + ' at ' + public_ip)
+            os.system('ssh -o StrictHostKeyChecking=no -i' + self.tmppath + '/id_rsa centos@' + public_ip)
+        else:
+            print("No VPC's found")
+            exit()
+
     def packer_list(self):
         """This option lists the available AMI resources to build"""
         print("Available AMI's to build:")
@@ -128,12 +163,13 @@ class Cloudy:
             resource = os.path.splitext(base)[0]
             print('\t' + resource)
 
-    def packer_deploy(self, ami):
+    def packer_deploy(self):
         """This option provisions AMI images with Packer and Ansible"""
+        self.verify_env()
         print('Deploying Packer on the ' + self.env + ' environment!')
         os.chdir(self.iacpath + '/packer')
         region = self.parse_region()
-        self.subp('packer build -var region=' + region + ' ' + ami + '.json')
+        self.subp('packer build -var ansiblepath=' + self.ansiblepath + ' -var region=' + region + ' ' + self.ami + '.json')
 
     def ansible_deploy(self, playbook):
         ssh_user = 'centos'
@@ -195,12 +231,13 @@ class Cloudy:
     def terraform_merge_env_and_secrets(self):
         self.vprint('\tMerge environment and secrets')
         self.recreate_dir(self.tmppath)
-        shutil.copyfile(self.tpath + '/terraform.tfvars', self.tmppath + '/terraform.tfvars')
+        shutil.copyfile(self.livepath + '/terraform.tfvars', self.tmppath + '/terraform.tfvars')
         self.write_variable_to_file(self.publickey, self.tmppath + '/id_rsa.pub')
         #shutil.copyfile(self.secrets + '/id_rsa.pub', self.tmppath + '/id_rsa.pub')
         self.write_variable_to_file(self.vaultpassword, self.tmppath + '/vault_password_file')
         #shutil.copyfile(self.secrets + '/vault_password_file', self.tmppath + '/vault_password_file')
         self.write_variable_to_file(self.privatekey, self.tmppath + '/id_rsa')
+        os.chmod(self.tmppath + '/id_rsa', stat.S_IWUSR | stat.S_IRUSR)
 
     def terraform_create_bucket(self):
         """ Create an S3 bucket - in case it doesn't exist"""
@@ -250,7 +287,9 @@ class Cloudy:
             self.terraform_copy_folder_files(self.iacpath + '/terraform/resources/' + d, self.tmppath)
 
     def terraform_prep(self):
+        self.verify_env()
         self.vprint('\tRemote state: ' + self.statebucket)
+        self.vprint('\tPublic Key: ' + self.publickey)
         include_dirs = self.parse_directories()
         home_ip = self.get_home_ip()
         self.terraform_merge_env_and_secrets()
@@ -268,9 +307,10 @@ class Cloudy:
         Remote state is pulled from S3
         """
         home_ip = self.terraform_prep()
-        self.subp("terraform init -var 'home_ip=" + home_ip + "'")
-        self.subp("terraform plan -var 'home_ip=" + home_ip + "'")
-        self.subp("terraform apply --auto-approve -var 'home_ip=" + home_ip + "'")
+        deploy = " --var 'directory_password=" + self.directorypassword + "' -var 'home_ip=" + home_ip + "'"
+        self.subp("terraform init " + deploy)
+        self.subp("terraform plan " + deploy)
+        self.subp("terraform apply --auto-approve " + deploy)
         self.terraform_push_state()
         print('------- Deploy Complete -------')
 
@@ -284,8 +324,9 @@ class Cloudy:
         Remote state is pulled from S3
         """
         home_ip = self.terraform_prep()
-        self.subp("terraform init -var 'home_ip=" + home_ip + "'")
-        self.subp("terraform destroy -auto-approve -var 'home_ip=" + home_ip + "'")
+        deploy = " --var 'directory_password=" + self.directorypassword + "' -var 'home_ip=" + home_ip + "'"
+        self.subp("terraform init " + deploy)
+        self.subp("terraform destroy -auto-approve " + deploy)
         self.terraform_push_state()
         print('------- Destroy Complete -------')
 

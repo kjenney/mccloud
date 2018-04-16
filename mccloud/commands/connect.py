@@ -23,33 +23,33 @@ def connect():
     """
     pass
 
-@packer.command()
+@connect.command()
 def verbose():
     """Turns on verbosity"""
     global c
     c.verbose = True
 
-@packer.command()
-def hostname():
+@connect.command()
+def host():
     """Choose a host by group name"""
     global c
-    hostname = click.prompt("Which instance do you want to connect to? ")
-    c.hostname = hostname
+    host = click.prompt("Which instance do you want to connect to? ")
+    c.host = host
     c.connect()
 
-@packer.command()
+@connect.command()
 def prod():
     """Works on prod environment"""
     global c
     c.env = 'prod'
 
-@packer.command()
+@connect.command()
 def stage():
     """Works on stage environment"""
     global c
     c.env = 'stage'
 
-@packer.command()
+@connect.command()
 def qa():
     """Works on qa environment"""
     global c

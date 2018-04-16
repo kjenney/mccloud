@@ -32,14 +32,15 @@ def verbose():
     c.verbose = True
 
 @packer.command()
-#@click.option('--ami', prompt=True)
+@click.option('--ami')
 def deploy():
     """This option deploys to AWS using Terraform"""
     global c
-    c.packer_list()
-    ami = click.prompt("Which AMI do you want to deploy? ")
-    c.ami = ami
-    c.packer_deploy()
+    if not ami:
+        c.packer_list()
+        ami = click.prompt("Which AMI do you want to deploy? ")
+        c.ami = ami
+        c.packer_deploy()
 
 @packer.command()
 def prod():

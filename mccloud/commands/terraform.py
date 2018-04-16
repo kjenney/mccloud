@@ -41,6 +41,11 @@ def destroy():
     c.terraform_destroy()
 
 @terraform.command()
+def dns():
+    """This option destroys using Terraform"""
+    print(c.terraform_dns())
+
+@terraform.command()
 def prod():
     """Works on prod environment"""
     global c

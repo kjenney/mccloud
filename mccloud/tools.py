@@ -38,14 +38,23 @@ class Cloudy:
         self.publickey = config['PUBLICKEY']
         self.vaultpassword = config['VAULTPASSWORD']
         self.directorypassword = config['DIRECTORYPASSWORD']
+        if 'CUSTOMCREDSFILE' in config:
+            self.customcreds = config['CUSTOMCREDSFILE']
+        else:
+            self.customcreds = ''
         self.livepath = ''
         self.tmppath = ''
         self.verbose = ''
         self.ami = ''
-        self.hostname = ''
+        self.host = ''
 
-    def verify_env(self):
+    def initialize_env(self, region = None):
         """Return True if env path exists."""
+        if self.customcreds != '':
+            os.environ["AWS_SHARED_CREDENTIALS_FILE"] = self.customcreds
+            self.vprint(os.environ["AWS_SHARED_CREDENTIALS_FILE"])
+            self.ec2 = boto3.resource('ec2', region_name = region)
+            return False
         self.livepath = self.iacpath + '/terraform/live/' + self.env
         self.tmppath = self.config['TMPPATH'] + '/' + self.env
         if self.env != 'none':
@@ -55,14 +64,16 @@ class Cloudy:
             self.statefile = 'terraform.tfstate'
             self.s3 = boto3.resource('s3')
             self.ec2 = boto3.resource('ec2', region_name = self.region)
+            self.ds = boto3.resource('ds', region_name = self.region)
         if self.env == 'none' or self.exists(self.livepath):
             return True
         return False
 
-    def write_variable_to_file(self, var, filename):
+    def write_variable_to_file(self, var, filename, perms):
         f = open(filename, 'w' )
         f.write(var + '\n')
         f.close()
+        os.system('chmod ' + perms + ' ' + filename)
 
     def parse_directories(self):
         """ Returns an array of directories to include in Terraform deploy """
@@ -92,9 +103,12 @@ class Cloudy:
     def subp(self, command):
         """ Shortcut for subprocess """
         self.vprint('\tLaunching: ' + command)
-        output = subprocess.check_output(command, stderr=subprocess.STDOUT, shell=True)
+        if self.verbose:
+            os.system(command)
+        else:
+            output = subprocess.check_output(command, stderr=subprocess.STDOUT, shell=True)
         #output = proc.stderr.read()
-        self.vprint(output)
+        #self.vprint(output)
 
     def download_file(self, url, file_name):
         """ Download a file from the web """
@@ -145,11 +159,12 @@ class Cloudy:
             return vpc.id
         
     def connect(self):
+        self.initialize_env()
         vpc = self.get_vpc_id()
         if vpc:
-            instance = self.get_instance_from_tag(vpc, self.hostname)
+            instance = self.get_instance_from_tag(vpc, self.host)
             public_ip = self.get_public_ip_from_instance(instance)
-            print('Connect to ' + host + ' at ' + public_ip)
+            print('Connect to ' + self.host + ' at ' + public_ip)
             os.system('ssh -o StrictHostKeyChecking=no -i' + self.tmppath + '/id_rsa centos@' + public_ip)
         else:
             print("No VPC's found")
@@ -158,6 +173,7 @@ class Cloudy:
     def packer_list(self):
         """This option lists the available AMI resources to build"""
         print("Available AMI's to build:")
+        self.initialize_env()
         for f_name in glob.glob(self.iacpath + '/packer/*.json'):
             base = os.path.basename(f_name)
             resource = os.path.splitext(base)[0]
@@ -165,7 +181,7 @@ class Cloudy:
 
     def packer_deploy(self):
         """This option provisions AMI images with Packer and Ansible"""
-        self.verify_env()
+        self.initialize_env()
         print('Deploying Packer on the ' + self.env + ' environment!')
         os.chdir(self.iacpath + '/packer')
         region = self.parse_region()
@@ -232,12 +248,11 @@ class Cloudy:
         self.vprint('\tMerge environment and secrets')
         self.recreate_dir(self.tmppath)
         shutil.copyfile(self.livepath + '/terraform.tfvars', self.tmppath + '/terraform.tfvars')
-        self.write_variable_to_file(self.publickey, self.tmppath + '/id_rsa.pub')
+        self.write_variable_to_file(self.publickey, self.tmppath + '/id_rsa.pub', '600')
         #shutil.copyfile(self.secrets + '/id_rsa.pub', self.tmppath + '/id_rsa.pub')
-        self.write_variable_to_file(self.vaultpassword, self.tmppath + '/vault_password_file')
+        self.write_variable_to_file(self.vaultpassword, self.tmppath + '/vault_password_file', '600')
         #shutil.copyfile(self.secrets + '/vault_password_file', self.tmppath + '/vault_password_file')
-        self.write_variable_to_file(self.privatekey, self.tmppath + '/id_rsa')
-        os.chmod(self.tmppath + '/id_rsa', stat.S_IWUSR | stat.S_IRUSR)
+        self.write_variable_to_file(self.privatekey, self.tmppath + '/id_rsa', '600')
 
     def terraform_create_bucket(self):
         """ Create an S3 bucket - in case it doesn't exist"""
@@ -287,7 +302,7 @@ class Cloudy:
             self.terraform_copy_folder_files(self.iacpath + '/terraform/resources/' + d, self.tmppath)
 
     def terraform_prep(self):
-        self.verify_env()
+        self.initialize_env()
         self.vprint('\tRemote state: ' + self.statebucket)
         self.vprint('\tPublic Key: ' + self.publickey)
         include_dirs = self.parse_directories()
@@ -329,6 +344,115 @@ class Cloudy:
         self.subp("terraform destroy -auto-approve " + deploy)
         self.terraform_push_state()
         print('------- Destroy Complete -------')
+
+
+    def terraform_dns(self):
+        home_ip = self.terraform_prep()
+        for directory in self.ds.describe_directories()['DirectoryDescriptions']:
+            return(directory['Name'])
+
+    def find_centos7_image(self):
+        response = self.ec2.describe_images(
+            Owners=['679593333241'], # CentOS
+            Filters=[
+                {'Name': 'name', 'Values': ['CentOS Linux 7 x86_64 HVM EBS *']},
+                {'Name': 'architecture', 'Values': ['x86_64']},
+                {'Name': 'root-device-type', 'Values': ['ebs']},
+            ],
+        )
+
+        amis = sorted(response['Images'],
+              key=lambda x: x['CreationDate'],
+              reverse=True)
+        return amis[0]['ImageId']
+
+    def create_keypair(self, keyname):
+        return self.ec2.create_key_pair(
+            KeyName=keyname
+        )
+
+    def wait_ec2_complate(self, client, instance_id):
+        """
+        this method is to make client keep sending request until ec2 instance building complate or fail
+        :param client:
+        :param instance_name:
+        :return:
+        """
+        while True:
+            time.sleep(10)
+            rsp = client.describe_instance_status(
+                InstanceIds=[str(instance_id)],
+                IncludeAllInstances=True
+            )
+            # double check 2/2 status
+            instance_status = rsp['InstanceStatuses'][0]['InstanceStatus']['Status']
+            system_status = rsp['InstanceStatuses'][0]['SystemStatus']['Status']
+
+            if str(instance_status) == 'ok' and str(system_status) == 'ok':
+                status = True
+                break
+            if str(instance_status) == 'impaired' or str(instance_status) == 'insufficient-data' or \
+                            str(instance_status) == 'not-applicable' or str(system_status) == 'failed' or \
+                            str(system_status) == 'insufficient-data':
+                status = False
+                #print('Instance status is ' + str(instance_status))
+                #print('System status is ' + str(system_status))
+                break
+            if time >= POLL_TIMES:
+                break
+        return status
+
+    def send_command_to_instance(self, instance_id, keypath, command):
+        filters = [{'Name':'instance-id', 'Values':[instance_id]}]
+        myinstance = list(self.ec2.instances.filter(Filters=filters))[0]
+        public_ip = self.get_public_ip_from_instance(myinstance)
+        print('ssh -o StrictHostKeyChecking=no -i ' + keypath + ' centos@' + public_ip + ' "' + command + '"')
+        os.system('ssh -o StrictHostKeyChecking=no -i ' + keypath + ' centos@' + public_ip + ' "' + command + '"')
+
+    def create_base_image(self, region='us-east-1'):
+        """Create a base image from the Centos 7 AMI"""
+        self.initialize_env(region)
+        # Get the latest Centos 7 AMI - cache it for now
+        #  centos7image = self.find_centos7_image()
+        centos7image = "ami-b81dbfc5"
+        # Create a keypair for the instance and save privatekey for connecting
+        privatekey = self.create_keypair('converter').key_material
+        keypath = '/tmp/id_rsa'
+        self.write_variable_to_file(privatekey, keypath, '600')
+        #print(privatekey)
+        availability_zone = region + 'd'
+        # Launch an EC2 instance with Centos 7 image
+        instance = self.ec2.create_instances(
+           ImageId=centos7image, 
+           MinCount=1, 
+           MaxCount=1,
+           KeyName="converter",
+           InstanceType="t2.micro",
+           Placement={
+             'AvailabilityZone': availability_zone
+           }
+        )
+        instance_id = instance[0].id
+        #client = self.ec2
+        #self.wait_ec2_complate(client, instance_id)
+        print('Waiting for instace to start: ' + instance_id)
+        time.sleep(30)
+        # Create an 8gb volume
+        volume = self.ec2.create_volume(
+            AvailabilityZone=availability_zone,
+            Size=8
+        )
+        print('Waiting for volume to be available: ' + volume.id)
+        time.sleep(20)
+        # Atach the volume to the instance
+        self.ec2.Instance(instance_id).attach_volume(VolumeId=volume.id, Device='/dev/sdf')
+        self.send_command_to_instance(instance_id, keypath, 'mkfs -t ext4 /dev/xvdf')
+        self.send_command_to_instance(instance_id, keypath, 'dd bs=1M if=/dev/xvda of=/dev/xvdf')
+        self.ec2.Instance(instance_id).stop_instance()
+        # detach root volume - delete it
+        # detach second volume and attach as root volume
+        # create image from instance
+        #  self.ec2.create_image
 
     def build_scaffold(self, dir):
         print('Building Scaffold in: %s' % dir)

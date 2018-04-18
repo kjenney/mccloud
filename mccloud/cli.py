@@ -10,6 +10,7 @@ from mccloud.commands.terraform import terraform
 from mccloud.commands.example import example
 from mccloud.commands.connect import connect
 from mccloud.commands.utils import utils
+from mccloud.commands.setup import setup
 
 @click.group()
 def entry():
@@ -24,4 +25,5 @@ entry.add_command(packer)
 entry.add_command(terraform)
 entry.add_command(connect)
 entry.add_command(utils)
+entry.add_command(setup)
 entry.add_command(version)

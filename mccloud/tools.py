@@ -15,8 +15,22 @@ def read_config():
     try:
         st = os.stat(file)
     except os.error:
-        return False
-    return json.load(open(file))
+        print('No config.json file found. Please create it and restart!')
+        exit()
+    config = json.load(open(file))
+    return verify_config(config)
+
+def verify_config(json):
+    required = ['BINPATH', 'ANSIBLEPATH', 'IACPATH', 'STATE', 'VAULTPASSWORD', 'PRIVATEKEY', 'PUBLICKEY']
+    if 'TMPPATH' not in json:
+        json['TMPPATH'] = '/tmp'
+    if 'DIRECTORYPASSWORD' not in json:
+        json['DIRECTORYPASSWORD'] = 'notrequired'
+    for r in required:
+        if r not in json:
+            print('Missing ' + r + '. Please check your config!')
+            exit()
+    return json
 
 class Cloudy:
     """
@@ -31,41 +45,31 @@ class Cloudy:
 
     def __init__(self, config):
         self.config = config
-        self.iacpath = config['IACPATH']
-        self.binpath = config['BINPATH']
-        self.ansiblepath = config['ANSIBLEPATH']
-        self.privatekey = config['PRIVATEKEY']
-        self.publickey = config['PUBLICKEY']
-        self.vaultpassword = config['VAULTPASSWORD']
-        self.directorypassword = config['DIRECTORYPASSWORD']
-        if 'CUSTOMCREDSFILE' in config:
-            self.customcreds = config['CUSTOMCREDSFILE']
-        else:
-            self.customcreds = ''
-        self.livepath = ''
-        self.tmppath = ''
-        self.verbose = ''
-        self.ami = ''
-        self.host = ''
 
-    def initialize_env(self, region = None):
+    def load_profile(profile):
+        """Load AWS credentials from a file under ~/.aws"""
+        os.environ["AWS_SHARED_CREDENTIALS_FILE"] = "~/.aws/" + profile
+        self.vprint(os.environ["AWS_SHARED_CREDENTIALS_FILE"])
+
+    def initialize_env(self, profile = None, region = None):
         """Return True if env path exists."""
-        if self.customcreds != '':
-            os.environ["AWS_SHARED_CREDENTIALS_FILE"] = self.customcreds
-            self.vprint(os.environ["AWS_SHARED_CREDENTIALS_FILE"])
-            self.ec2 = boto3.resource('ec2', region_name = region)
-            return False
-        self.livepath = self.iacpath + '/terraform/live/' + self.env
-        self.tmppath = self.config['TMPPATH'] + '/' + self.env
-        if self.env != 'none':
+        if self.verify_env():
             self.vprint('\tEnvironment path:' + self.livepath + '\n')
             self.region = self.parse_region()
             self.statebucket = self.config['STATE'][self.env]
             self.statefile = 'terraform.tfstate'
             self.s3 = boto3.resource('s3')
             self.ec2 = boto3.resource('ec2', region_name = self.region)
-            self.ds = boto3.resource('ds', region_name = self.region)
-        if self.env == 'none' or self.exists(self.livepath):
+            self.ds = boto3.client('ds', region_name = self.region)  # No resource available for ds
+        else:
+            print('Invalid environment path!')
+            exit()
+
+    def verify_env(self):
+        """Return True if env path exists."""
+        self.livepath = self.config['IACPATH'] + '/terraform/live/' + self.env
+        self.tmppath = self.config['TMPPATH'] + '/' + self.env
+        if self.exists(self.livepath):
             return True
         return False
 
@@ -85,6 +89,15 @@ class Cloudy:
                     dircsv = re.sub('["]', '', dirs)
         return dircsv.split(',')
 
+    def parse_role(self):
+        """ Returns the assume role specified in the Terraform/Env Config"""
+        file = self.livepath + '/terraform.tfvars'
+        with open(file, "r") as f:
+            for line in f:
+                if 'assumeRole' in line:
+                    role = line.split("=")[1].strip()
+                    return re.sub('["]', '', role)
+
     def parse_region(self):
         """ Returns the region for the current environment """
         file = self.livepath + '/terraform.tfvars'
@@ -97,7 +110,7 @@ class Cloudy:
 
     def vprint(self, mystring):
         """ Verbose printing """
-        if self.verbose:
+        if hasattr(self, 'verbose'):
             print(mystring)
 
     def subp(self, command):
@@ -157,7 +170,20 @@ class Cloudy:
         vpcs = self.ec2.vpcs.filter(Filters=filters)
         for vpc in vpcs:
             return vpc.id
-        
+
+    def assume_role(self):
+        """Assume a role if in the config"""
+        self.initialize_env()
+        role = self.parse_role()
+        if role:
+            get_assume_session = aws sts assume-role –role-arn=$(1) –role-session-name=packer
+            get_assume_credential = jq –null-input ‘$(1)’ | jq .Credentials.$(2) -r
+            define assume_role
+            $(eval AWS_SESSION = $(shell $(call get_assume_session,$(1))))
+            $(eval export AWS_ACCESS_KEY_ID = $(shell $(call get_assume_credential,$(AWS_SESSION),AccessKeyId)))
+            $(eval export AWS_SECRET_ACCESS_KEY = $(shell $(call get_assume_credential,$(AWS_SESSION),SecretAccessKey)))
+            $(eval export AWS_SESSION_TOKEN = $(shell $(call get_assume_credential,$(AWS_SESSION),SessionToken)))
+
     def connect(self):
         self.initialize_env()
         vpc = self.get_vpc_id()
@@ -172,9 +198,9 @@ class Cloudy:
 
     def packer_list(self):
         """This option lists the available AMI resources to build"""
-        print("Available AMI's to build:")
         self.initialize_env()
-        for f_name in glob.glob(self.iacpath + '/packer/*.json'):
+        print("Available AMI's to build:")
+        for f_name in glob.glob(self.config['IACPATH'] + '/packer/*.json'):
             base = os.path.basename(f_name)
             resource = os.path.splitext(base)[0]
             print('\t' + resource)
@@ -183,9 +209,9 @@ class Cloudy:
         """This option provisions AMI images with Packer and Ansible"""
         self.initialize_env()
         print('Deploying Packer on the ' + self.env + ' environment!')
-        os.chdir(self.iacpath + '/packer')
+        os.chdir(self.config['IACPATH'] + '/packer')
         region = self.parse_region()
-        self.subp('packer build -var ansiblepath=' + self.ansiblepath + ' -var region=' + region + ' ' + self.ami + '.json')
+        self.subp('packer build -var ansiblepath=' + self.config['ANSIBLEPATH'] + ' -var region=' + region + ' ' + self.ami + '.json')
 
     def ansible_deploy(self, playbook):
         ssh_user = 'centos'
@@ -216,12 +242,12 @@ class Cloudy:
         response = exists('terraform/' + self.env + '/terraform.tfstate')
 
         if response == True:
-            self.subp('cd ansible && ansible ' + host + ' -a "' + cmd + '" -u ' + ssh_user + ' -i inventory/terraform  --private-key ../terraform/' + env + '/id_rsa')            
+            self.subp('cd ansible && ansible ' + host + ' -a "' + cmd + '" -u ' + ssh_user + ' -i inventory/terraform  --private-key ../terraform/' + env + '/id_rsa')
         else:
             print("Path not found: " + 'terraform/' + self.env + '/terraform.tfstate')
 
     def get_home_ip(self):
-        """ 
+        """
         Returns the public IP address of the curent address
         """
         self.vprint('\tGetting Home IP address')
@@ -299,7 +325,7 @@ class Cloudy:
         """ Copy incuded resources to temp path """
         self.vprint('\tCopying resources')
         for d in include_dirs:
-            self.terraform_copy_folder_files(self.iacpath + '/terraform/resources/' + d, self.tmppath)
+            self.terraform_copy_folder_files(self.config['IACPATH'] + '/terraform/resources/' + d, self.tmppath)
 
     def terraform_prep(self):
         self.initialize_env()
@@ -315,8 +341,8 @@ class Cloudy:
 
     def terraform_deploy(self):
         """
-        Deploy using Terraform 
-        
+        Deploy using Terraform
+
         Combine resources with environment definitions to build out environments
 
         Remote state is pulled from S3
@@ -332,8 +358,8 @@ class Cloudy:
     # Terraform destroys combine resources with environment definitions to build out environments
     def terraform_destroy(self):
         """
-        Destroy using Terraform 
-        
+        Destroy using Terraform
+
         Combine resources with environment definitions to build out environments
 
         Remote state is pulled from S3
@@ -423,8 +449,8 @@ class Cloudy:
         availability_zone = region + 'd'
         # Launch an EC2 instance with Centos 7 image
         instance = self.ec2.create_instances(
-           ImageId=centos7image, 
-           MinCount=1, 
+           ImageId=centos7image,
+           MinCount=1,
            MaxCount=1,
            KeyName="converter",
            InstanceType="t2.micro",

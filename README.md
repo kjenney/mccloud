@@ -17,8 +17,8 @@ Config is pulled from config.json in the working directory. All secrets are in t
     "qa": "qa-state"
   },
   "VAULTPASSWORD": "myvaultpassword",
-  "PRIVATE_KEY": "-----BEGIN RSA PRIVATE KEY-----\n..."
-  "PUBLIC_KEY": "-----BEGIN RSA PUBLIC KEY-----\n..."
+  "PRIVATEKEY": "-----BEGIN RSA PRIVATE KEY-----\n...",
+  "PUBLICKEY": "-----BEGIN RSA PUBLIC KEY-----\n..."
 }
 ```
 

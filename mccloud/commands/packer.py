@@ -13,15 +13,15 @@ c = Cloudy(config)
 @click.group(chain=True)
 def packer():
     """Manage and Deploy AMI's with Packer and Ansible
-    
+
     Examples:
 
-    mccloud packer verbose prod deploy
+    mccloud packer verbose deploy --env prod
 
-    mccloud packer verbose prod destroy
+    mccloud packer verbose deploy --env qa
 
-    mccloud packer prod deploy
-    
+    mccloud packer deploy --env prod
+
     """
     pass
 
@@ -33,29 +33,18 @@ def verbose():
 
 @packer.command()
 @click.option('--ami')
-def deploy():
-    """This option deploys to AWS using Terraform"""
+@click.option('--env')
+def deploy(ami = None, env = None):
+    """This option deploys AMI's with Packer and Ansible"""
     global c
+    if not env:
+        print('You must pass an environment!')
+        exit()
     if not ami:
+        c.env = env
+        c.assume_role()
+        exit()
         c.packer_list()
         ami = click.prompt("Which AMI do you want to deploy? ")
         c.ami = ami
         c.packer_deploy()
-
-@packer.command()
-def prod():
-    """Works on prod environment"""
-    global c
-    c.env = 'prod'
-
-@packer.command()
-def stage():
-    """Works on stage environment"""
-    global c
-    c.env = 'stage'
-
-@packer.command()
-def qa():
-    """Works on qa environment"""
-    global c
-    c.env = 'qa'

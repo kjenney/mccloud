@@ -11,15 +11,15 @@ c = Cloudy(config)
 @click.group(chain=True)
 def terraform():
     """Do stuff with Terraform
-    
+
     Examples:
 
-    mccloud terraform verbose prod deploy
+    mccloud terraform verbose deploy --env prod
 
-    mccloud terraform verbose prod destroy
+    mccloud terraform verbose destroy --env prod
 
-    mccloud terraform prod deploy
-    
+    mccloud terraform deploy --env prod
+
     """
     pass
 
@@ -30,35 +30,17 @@ def verbose():
     c.verbose = True
 
 @terraform.command()
-def deploy():
+@click.option('--env')
+def deploy(env):
     """This option deploys to AWS using Terraform"""
     global c
+    c.env = env
     c.terraform_deploy()
 
 @terraform.command()
-def destroy():
+@click.option('--env')
+def destroy(env):
     """This option destroys using Terraform"""
+    global c
+    c.env = env
     c.terraform_destroy()
-
-@terraform.command()
-def dns():
-    """This option destroys using Terraform"""
-    print(c.terraform_dns())
-
-@terraform.command()
-def prod():
-    """Works on prod environment"""
-    global c
-    c.env = 'prod'
-
-@terraform.command()
-def stage():
-    """Works on stage environment"""
-    global c
-    c.env = 'stage'
-
-@terraform.command()
-def qa():
-    """Works on qa environment"""
-    global c
-    c.env = 'qa'

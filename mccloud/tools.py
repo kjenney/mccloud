@@ -46,18 +46,28 @@ class Cloudy:
     def __init__(self, config):
         self.config = config
 
-    def load_profile(profile):
-        """Load AWS credentials from a file under ~/.aws"""
-        os.environ["AWS_SHARED_CREDENTIALS_FILE"] = "~/.aws/" + profile
-        self.vprint(os.environ["AWS_SHARED_CREDENTIALS_FILE"])
+    def aws_profile(self):
+        if self.env != 'base':
+            os.environ['AWS_PROFILE'] = self.env
+            os.environ['AWS_SDK_LOAD_CONFIG'] = 'true'
 
     def initialize_env(self, profile = None, region = None):
         """Return True if env path exists."""
         if self.verify_env():
             self.vprint('\tEnvironment path:' + self.livepath + '\n')
-            self.region = self.parse_region()
+            self.region = self.parse_terraform_config('region')
             self.statebucket = self.config['STATE'][self.env]
             self.statefile = 'terraform.tfstate'
+            self.publickey = self.config['PUBLICKEY']
+            self.privatekey = self.config['PRIVATEKEY']
+            self.vaultpassword = self.config['VAULTPASSWORD']
+            self.directorypassword = self.config['DIRECTORYPASSWORD']
+            self.aws_profile()
+            # if self.env != 'base':
+            #     session = boto3.session.Session(profile_name=self.env)
+            # else:
+            #     session = boto3.session.Session()
+            #   replace boto3 with session
             self.s3 = boto3.resource('s3')
             self.ec2 = boto3.resource('ec2', region_name = self.region)
             self.ds = boto3.client('ds', region_name = self.region)  # No resource available for ds
@@ -69,7 +79,7 @@ class Cloudy:
         """Return True if env path exists."""
         self.livepath = self.config['IACPATH'] + '/terraform/live/' + self.env
         self.tmppath = self.config['TMPPATH'] + '/' + self.env
-        if self.exists(self.livepath):
+        if self.exists(self.livepath) and self.env in self.config['STATE']:
             return True
         return False
 
@@ -79,34 +89,28 @@ class Cloudy:
         f.close()
         os.system('chmod ' + perms + ' ' + filename)
 
-    def parse_directories(self):
-        """ Returns an array of directories to include in Terraform deploy """
+    def parse_terraform_config(self, element):
+        """Parses variables stored in the Terraform config file
+
+        We're using this file as the central store of variables for an AWS region
+        Returns a string or array depending upon the variable type
+        """
         file = self.livepath + '/terraform.tfvars'
         with open(file, "r") as f:
             for line in f:
-                if 'include' in line:
+                if element == 'includeResources' and element in line:
                     dirs = line.split("=")[1].strip()
                     dircsv = re.sub('["]', '', dirs)
-        return dircsv.split(',')
-
-    def parse_role(self):
-        """ Returns the assume role specified in the Terraform/Env Config"""
-        file = self.livepath + '/terraform.tfvars'
-        with open(file, "r") as f:
-            for line in f:
-                if 'assumeRole' in line:
-                    role = line.split("=")[1].strip()
-                    return re.sub('["]', '', role)
-
-    def parse_region(self):
-        """ Returns the region for the current environment """
-        file = self.livepath + '/terraform.tfvars'
-        with open(file, "r") as f:
-            for line in f:
-                if 'aws_region' in line:
+                    return dircsv.split(',')
+                if element == 'packerSubnet' or 'packerSecuritygroup':
+                    if element in line:
+                        match = line.split("=")[1].strip()
+                        return re.sub('["]', '', match)
+                if element == 'region' and element in line:
                     region = line.split("=")[1].strip()
                     region = region.replace('"', '')
-        return region
+                    return region
+        return False
 
     def vprint(self, mystring):
         """ Verbose printing """
@@ -116,8 +120,11 @@ class Cloudy:
     def subp(self, command):
         """ Shortcut for subprocess """
         self.vprint('\tLaunching: ' + command)
-        if self.verbose:
-            os.system(command)
+        if hasattr(self, 'verbose'):
+            exitvalue = os.system(command)
+            if exitvalue != 0:
+                print("Something went wrong")
+                exit()
         else:
             output = subprocess.check_output(command, stderr=subprocess.STDOUT, shell=True)
         #output = proc.stderr.read()
@@ -171,18 +178,21 @@ class Cloudy:
         for vpc in vpcs:
             return vpc.id
 
-    def assume_role(self):
-        """Assume a role if in the config"""
+    def list_instances(self):
+        """List EC2 instances"""
         self.initialize_env()
-        role = self.parse_role()
-        if role:
-            get_assume_session = aws sts assume-role –role-arn=$(1) –role-session-name=packer
-            get_assume_credential = jq –null-input ‘$(1)’ | jq .Credentials.$(2) -r
-            define assume_role
-            $(eval AWS_SESSION = $(shell $(call get_assume_session,$(1))))
-            $(eval export AWS_ACCESS_KEY_ID = $(shell $(call get_assume_credential,$(AWS_SESSION),AccessKeyId)))
-            $(eval export AWS_SECRET_ACCESS_KEY = $(shell $(call get_assume_credential,$(AWS_SESSION),SecretAccessKey)))
-            $(eval export AWS_SESSION_TOKEN = $(shell $(call get_assume_credential,$(AWS_SESSION),SessionToken)))
+        instances = self.ec2.instances.filter(
+            Filters=[{'Name': 'instance-state-name', 'Values': ['running']}])
+        for instance in instances:
+            print(instance.id, instance.instance_type)
+
+    def list_envs(self):
+        """List Environments"""
+        print('\nAvailable Environments:')
+        for f_name in glob.glob(self.config['IACPATH'] + '/terraform/live/*'):
+            base = os.path.basename(f_name)
+            resource = os.path.splitext(base)[0]
+            print('\t' + resource)
 
     def connect(self):
         self.initialize_env()
@@ -195,6 +205,20 @@ class Cloudy:
         else:
             print("No VPC's found")
             exit()
+
+    def add_private_key_to_ssh_agent(self):
+        """Adds a private key to the local SSH Agent. Assumes you're sitting next to it"""
+        os.system('ssh-add id_rsa')
+
+    def copy_file_to_s3_bucket(self, bucket, src, dest):
+        try:
+            self.s3.Bucket(bucket).upload_file(self.tmppath + '/' + self.statefile, self.statefile)
+        except botocore.exceptions.ClientError as e:
+            if e.response['Error']['Code'] == '404':
+                if hasattr(self, 'verbose'):
+                    print('\t\tNo state file found.')
+            else:
+                raise
 
     def packer_list(self):
         """This option lists the available AMI resources to build"""
@@ -210,8 +234,21 @@ class Cloudy:
         self.initialize_env()
         print('Deploying Packer on the ' + self.env + ' environment!')
         os.chdir(self.config['IACPATH'] + '/packer')
-        region = self.parse_region()
-        self.subp('packer build -var ansiblepath=' + self.config['ANSIBLEPATH'] + ' -var region=' + region + ' ' + self.ami + '.json')
+        region = self.parse_terraform_config('region')
+        if hasattr(self, 'firstrun'):
+            variables = " -var region=" + region
+            self.ami = 'base'
+        else:
+            securitygroupname = self.parse_terraform_config('packerSecuritygroup')
+            subnetname = self.parse_terraform_config('packerSubnet')
+            securitygroup = self.id_from_name('securitygroup', securitygroupname)
+            subnet = self.id_from_name('subnet', subnetname)
+            variables = " -var region=" + region + " -var securitygroup=" + securitygroup + " -var subnet=" + subnet
+        if not hasattr(self,'ami'):
+            self.packer_list()
+            ami = input("Which AMI do you want to deploy? ")
+            self.ami = ami
+        self.subp('packer build -var ansiblepath=' + self.config['ANSIBLEPATH'] + variables + ' ' + self.ami + '.json')
 
     def ansible_deploy(self, playbook):
         ssh_user = 'centos'
@@ -267,7 +304,8 @@ class Cloudy:
             shutil.copy(file, dest)
 
     def terraform_copy_folder_files(self, src, dest):
-        for file in glob.glob(src + '/*'):
+        for file in glob.glob(src):
+            self.vprint('\t\tCopying this file: ' + file)
             shutil.copy(file, dest)
 
     def terraform_merge_env_and_secrets(self):
@@ -304,34 +342,31 @@ class Cloudy:
                 self.vprint('\t\tNo state file found.')
             elif e.response['Error']['Code'] == '403':
                 self.vprint('\t\tNo bucket found. Creating it.')
-                self.terraform_create_bucket
+                self.terraform_create_bucket()
             else:
                 raise
 
     def terraform_push_state(self):
         """ Push the current state file to S3 """
         self.vprint('\tPush current state to S3')
-
-        try:
-            self.s3.Bucket(self.statebucket).upload_file(self.tmppath + '/' + self.statefile, self.statefile)
-        except botocore.exceptions.ClientError as e:
-            if e.response['Error']['Code'] == '404':
-                if self.verbose:
-                    print('\t\tNo state file found.')
-            else:
-                raise
+        self.copy_file_to_s3_bucket(self.statebucket, self.tmppath + '/' + self.statefile, self.statefile)
 
     def terraform_copy_resources(self, include_dirs):
         """ Copy incuded resources to temp path """
         self.vprint('\tCopying resources')
         for d in include_dirs:
-            self.terraform_copy_folder_files(self.config['IACPATH'] + '/terraform/resources/' + d, self.tmppath)
+            if '/' in d:
+                directory = d.split('/')[0]
+                file = d.split('/')[1] + '.tf'
+                self.terraform_copy_folder_files(self.config['IACPATH'] + '/terraform/resources/' + directory + '/' + file, self.tmppath)
+            else:
+                self.terraform_copy_folder_files(self.config['IACPATH'] + '/terraform/resources/' + d + '/*', self.tmppath)
 
     def terraform_prep(self):
         self.initialize_env()
         self.vprint('\tRemote state: ' + self.statebucket)
-        self.vprint('\tPublic Key: ' + self.publickey)
-        include_dirs = self.parse_directories()
+        #self.vprint('\tPrivate Key: ' + self.privatekey)
+        include_dirs = self.parse_terraform_config('includeResources')
         home_ip = self.get_home_ip()
         self.terraform_merge_env_and_secrets()
         self.terraform_pull_state()
@@ -353,7 +388,10 @@ class Cloudy:
         self.subp("terraform plan " + deploy)
         self.subp("terraform apply --auto-approve " + deploy)
         self.terraform_push_state()
-        print('------- Deploy Complete -------')
+        print('------- Deploy Complete -------\n')
+        print('------- Adding the Private Key to the Local SSH Agent -------\n')
+        self.add_private_key_to_ssh_agent()
+
 
     # Terraform destroys combine resources with environment definitions to build out environments
     def terraform_destroy(self):
@@ -506,3 +544,29 @@ class Cloudy:
         self.make_exeutable(dest + 'terragrunt')
         self.vprint('\tInstalled terragrunt')
         print('\tInstalled all tools')
+
+    def generate_ssh_keys(self):
+        """Generate a Key Pair and print them here to add them to config.json"""
+        replace = "awk '{printf \"%s\\\\n\", $0}' /tmp/terraform"
+        # file1 = "/tmp/file"
+        # with open(file1,"rb") as f:
+        #    contents = f.read().replace(b"\n",b"\\n\n")
+        # with open(file1+".bak","wb") as f:
+        #    f.write(contents)
+        # os.remove(file1)
+        # os.rename(file1+".bak",file1)
+        os.remove('/tmp/terraform*')
+        # os.system("ssh-keygen -f /tmp/terraform -t rsa -N '' > /dev/null 2>&1")
+        # os.system(replace)
+        # print('\n')
+        # os.system('cat /tmp/terraform.pub')
+        # print('Copy private key to S3 Bucket')
+        # self.copy_file_to_s3_bucket(self.config['STATE'][self.env], '/tmp/terraform', 'terraform.pem')
+        # os.system('rm -f /tmp/terraform*')
+
+    def generate_ssh_keys_native(self):
+        from OpenSSL import crypto
+        k = crypto.PKey()
+        k.generate_key(crypto.TYPE_RSA, 4096)
+        print(crypto.dump_privatekey(crypto.FILETYPE_PEM, k))
+        print(crypto.dump_publickey(crypto.FILETYPE_PEM, k))

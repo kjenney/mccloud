@@ -20,7 +20,7 @@ def packer():
 
     mccloud packer verbose deploy --env qa
 
-    mccloud packer deploy --env prod
+    mccloud packer first deploy --env dev
 
     """
     pass
@@ -32,19 +32,27 @@ def verbose():
     c.verbose = True
 
 @packer.command()
+def first():
+    """Set for first-run build of new environments
+
+    Packer assumes that you've got Subnets and Security Groups built
+    but if this is your first-run then you would not...so Packer
+    can use the default VPC.
+
+    """
+    global c
+    c.firstrun = True
+
+@packer.command()
 @click.option('--ami')
 @click.option('--env')
 def deploy(ami = None, env = None):
-    """This option deploys AMI's with Packer and Ansible"""
+    """Deploys AMI's with Packer and Ansible"""
     global c
     if not env:
         print('You must pass an environment!')
         exit()
-    if not ami:
-        c.env = env
-        c.assume_role()
-        exit()
-        c.packer_list()
-        ami = click.prompt("Which AMI do you want to deploy? ")
-        c.ami = ami
-        c.packer_deploy()
+    if ami: c.ami = ami
+    c.env = env
+    c.packer_deploy()
+    exit()

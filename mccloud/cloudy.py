@@ -6,31 +6,9 @@ import subprocess
 import requests
 import platform
 import boto3
-import botocore
+import pandas as pd
 
 from mccloud.constants import *
-
-def read_config():
-    file = CURPATH + '/config.json'
-    try:
-        st = os.stat(file)
-    except os.error:
-        print('No config.json file found. Please create it and restart!')
-        exit()
-    config = json.load(open(file))
-    return verify_config(config)
-
-def verify_config(json):
-    required = ['BINPATH', 'ANSIBLEPATH', 'IACPATH', 'STATE', 'VAULTPASSWORD', 'PRIVATEKEY', 'PUBLICKEY']
-    if 'TMPPATH' not in json:
-        json['TMPPATH'] = '/tmp'
-    if 'DIRECTORYPASSWORD' not in json:
-        json['DIRECTORYPASSWORD'] = 'notrequired'
-    for r in required:
-        if r not in json:
-            print('Missing ' + r + '. Please check your config!')
-            exit()
-    return json
 
 class Cloudy:
     """
@@ -39,7 +17,7 @@ class Cloudy:
     This allows us to pass all our environment variables and
     make them available to all of the methods
 
-    env, verbose are set by clicks multichain
+    verbose is set by clicks multichain
 
     """
 
@@ -63,17 +41,18 @@ class Cloudy:
             self.vaultpassword = self.config['VAULTPASSWORD']
             self.directorypassword = self.config['DIRECTORYPASSWORD']
             self.aws_profile()
-            # if self.env != 'base':
-            #     session = boto3.session.Session(profile_name=self.env)
-            # else:
-            #     session = boto3.session.Session()
-            #   replace boto3 with session
             self.s3 = boto3.resource('s3')
             self.ec2 = boto3.resource('ec2', region_name = self.region)
             self.ds = boto3.client('ds', region_name = self.region)  # No resource available for ds
         else:
             print('Invalid environment path!')
             exit()
+
+    def delete_files_regex(self, dir, pattern):
+        """Delete files based on Regular Expression"""
+        for f in os.listdir(dir):
+            if re.search(pattern, f):
+                os.remove(os.path.join(dir, f))
 
     def verify_env(self):
         """Return True if env path exists."""
@@ -162,14 +141,34 @@ class Cloudy:
             return False
         return True
 
-    def get_instance_from_tag(self, vpc, tag):
+    def ec2_security_group_id_from_name_tag(self, name):
+        """Get an EC2 Security Group ID from Name Tag"""
+        filters = [{"Name":"group-name", "Values": [name]}]
+        security_groups = list(self.ec2.security_groups.filter(Filters=filters))
+        if not security_groups:
+            print("No Security Group: " + name + " found. Please make sure it's created")
+            exit(1)
+        else:
+            for item in security_groups: return item.id    # Return first resource
+
+    def ec2_subnet_id_from_name_tag(self, name):
+        """Get an EC2 Subnet ID from Name Tag"""
+        filters = [{'Name':'tag:Name', 'Values':[name]}]
+        subnets = list(self.ec2.subnets.filter(Filters=filters))
+        if not subnets:
+            print("No Subnet: " + name + " found. Please make sure it's created")
+            exit(1)
+        else:
+            for item in subnets: return item.id    # Return first resource
+
+    def ec2_instance_from_tag(self, vpc, tag):
         vpc = self.ec2.Vpc(vpc)
         filters = [{'Name':'tag:group', 'Values':[tag]}]
         instances = vpc.instances.filter(Filters=filters)
         for instance in instances:
             return instance
 
-    def get_public_ip_from_instance(self, instance):
+    def ec2_public_ip_from_instance(self, instance):
         return instance.public_ip_address
 
     def get_vpc_id(self):
@@ -178,13 +177,70 @@ class Cloudy:
         for vpc in vpcs:
             return vpc.id
 
-    def list_instances(self):
+    def ec2_instance_name_tag(self, instance):
+        for tags in instance.tags:
+            if tags["Key"] == 'Name':
+                return tags["Value"]
+        return "None"
+
+    def list_ec2_instances(self):
         """List EC2 instances"""
         self.initialize_env()
         instances = self.ec2.instances.filter(
             Filters=[{'Name': 'instance-state-name', 'Values': ['running']}])
+        instance_count = sum(1 for _ in instances.all())
+        RunningInstances = []
         for instance in instances:
-            print(instance.id, instance.instance_type)
+            id = instance.id
+            name = self.ec2_instance_name_tag(instance)
+            type = instance.instance_type
+            ip = instance.public_ip_address
+            mylist = {"name":name,"id":id,"type":type,"ip":ip}
+            #mylist = {"name":name,"ip":ip}
+            RunningInstances.append(mylist.copy())
+        table = pd.DataFrame.from_dict(RunningInstances)
+        check = table.style.render()
+        self.write_variable_to_file(check, '/tmp/instances.html', '777')
+        print('/tmp/instances.html')
+
+    def set_perms_on_ami(self, ami_id, account):
+        account=1234567
+        print(perms)
+        #aws ec2 modify-image-attribute --image-id ami-e548fe9a --launch-permission "{\"Add\": [{\"UserId\":account"}]}"
+
+    def launch_instance_from_ami(self, ami_id):
+        self.initialize_env()
+        self.ec2.create_instances(ImageId=ami_id, MinCount=1, MaxCount=1)
+
+    def build_ami_from_running_instance(self, instance_id):
+        """
+        Step 1: Get the size of the root volume
+        Step 2: Get the Instance Name Tag
+                'SnapshotId': 'string',
+        Step 2: Create AMI
+        """
+        #from pprint import pprint
+        self.initialize_env()
+        instance = self.ec2.Instance(instance_id)
+        instance_name = self.ec2_instance_name_tag(instance)
+        volumes = instance.volumes.all()
+        for v in volumes:
+           vsize = v.size
+        image = instance.create_image(
+            BlockDeviceMappings=[
+                {
+                    'DeviceName': '/dev/sda1',
+                    'Ebs': {
+                        'Encrypted': False,
+                        'DeleteOnTermination': True,
+                        'VolumeSize': vsize,
+                        'VolumeType': 'gp2'
+                    },
+                },
+            ],
+            Description='Image of ' + instance_name,
+            Name=instance_name
+        )
 
     def list_envs(self):
         """List Environments"""
@@ -198,8 +254,8 @@ class Cloudy:
         self.initialize_env()
         vpc = self.get_vpc_id()
         if vpc:
-            instance = self.get_instance_from_tag(vpc, self.host)
-            public_ip = self.get_public_ip_from_instance(instance)
+            instance = self.ec2_instance_from_tag(vpc, self.host)
+            public_ip = self.ec2_public_ip_from_instance(instance)
             print('Connect to ' + self.host + ' at ' + public_ip)
             os.system('ssh -o StrictHostKeyChecking=no -i' + self.tmppath + '/id_rsa centos@' + public_ip)
         else:
@@ -210,9 +266,22 @@ class Cloudy:
         """Adds a private key to the local SSH Agent. Assumes you're sitting next to it"""
         os.system('ssh-add id_rsa')
 
+    def create_s3_bucket(self, bucket):
+        """ Create an S3 bucket - in case it doesn't exist"""
+        try:
+            self.s3.create_bucket(Bucket=bucket)
+        except botocore.exceptions.ClientError as e:
+            if e.response['Error']['Code'] == '404':
+                self.vprint('\t\tNo state file found.')
+            elif e.response['Error']['Code'] == '403':
+                self.vprint('\t\tS3 Bucket Permissions error.')
+                exit()
+            else:
+                raise
+
     def copy_file_to_s3_bucket(self, bucket, src, dest):
         try:
-            self.s3.Bucket(bucket).upload_file(self.tmppath + '/' + self.statefile, self.statefile)
+            self.s3.Bucket(bucket).upload_file(src, dest)
         except botocore.exceptions.ClientError as e:
             if e.response['Error']['Code'] == '404':
                 if hasattr(self, 'verbose'):
@@ -230,25 +299,32 @@ class Cloudy:
             print('\t' + resource)
 
     def packer_deploy(self):
-        """This option provisions AMI images with Packer and Ansible"""
+        """
+
+        This option provisions AMI images with Packer and Ansible
+
+        Security Group set to 'packer'
+
+        """
         self.initialize_env()
         print('Deploying Packer on the ' + self.env + ' environment!')
         os.chdir(self.config['IACPATH'] + '/packer')
-        region = self.parse_terraform_config('region')
+        region = self.parse_terraform_config('aws_region')
         if hasattr(self, 'firstrun'):
-            variables = " -var region=" + region
-            self.ami = 'base'
+           variables = " -var region=" + region
+           self.ami = 'base'
         else:
-            securitygroupname = self.parse_terraform_config('packerSecuritygroup')
             subnetname = self.parse_terraform_config('packerSubnet')
-            securitygroup = self.id_from_name('securitygroup', securitygroupname)
-            subnet = self.id_from_name('subnet', subnetname)
+            securitygroup = self.ec2_security_group_id_from_name_tag('packer')
+            subnet = self.ec2_subnet_id_from_name_tag(subnetname)
             variables = " -var region=" + region + " -var securitygroup=" + securitygroup + " -var subnet=" + subnet
         if not hasattr(self,'ami'):
             self.packer_list()
             ami = input("Which AMI do you want to deploy? ")
             self.ami = ami
-        self.subp('packer build -var ansiblepath=' + self.config['ANSIBLEPATH'] + variables + ' ' + self.ami + '.json')
+        #self.subp('packer build -var ansiblepath=' + self.config['ANSIBLEPATH'] + variables + ' ' + self.ami + '.json')
+        os.system('packer build -var ansiblepath=' + self.config['ANSIBLEPATH'] + variables + ' ' + self.ami + '.json')
+
 
     def ansible_deploy(self, playbook):
         ssh_user = 'centos'
@@ -283,11 +359,11 @@ class Cloudy:
         else:
             print("Path not found: " + 'terraform/' + self.env + '/terraform.tfstate')
 
-    def get_home_ip(self):
+    def get_connect_ip(self):
         """
         Returns the public IP address of the curent address
         """
-        self.vprint('\tGetting Home IP address')
+        self.vprint('\tGetting Connect IP address')
         my_ip = requests.get("http://ipecho.net/plain?").text
         self.vprint('\t\t' + my_ip + '/32')
         return my_ip + '/32'
@@ -318,19 +394,6 @@ class Cloudy:
         #shutil.copyfile(self.secrets + '/vault_password_file', self.tmppath + '/vault_password_file')
         self.write_variable_to_file(self.privatekey, self.tmppath + '/id_rsa', '600')
 
-    def terraform_create_bucket(self):
-        """ Create an S3 bucket - in case it doesn't exist"""
-        try:
-            self.s3.create_bucket(Bucket=self.statebucket)
-        except botocore.exceptions.ClientError as e:
-            if e.response['Error']['Code'] == '404':
-                self.vprint('\t\tNo state file found.')
-            elif e.response['Error']['Code'] == '403':
-                self.vprint('\t\tS3 Bucket Permissions error.')
-                exit()
-            else:
-                raise
-
     def terraform_pull_state(self):
         """ Pull a state file from S3 """
         self.vprint('\tPull remote state')
@@ -342,7 +405,7 @@ class Cloudy:
                 self.vprint('\t\tNo state file found.')
             elif e.response['Error']['Code'] == '403':
                 self.vprint('\t\tNo bucket found. Creating it.')
-                self.terraform_create_bucket()
+                self.create_s3_bucket(Bucket=self.statebucket)
             else:
                 raise
 
@@ -367,12 +430,12 @@ class Cloudy:
         self.vprint('\tRemote state: ' + self.statebucket)
         #self.vprint('\tPrivate Key: ' + self.privatekey)
         include_dirs = self.parse_terraform_config('includeResources')
-        home_ip = self.get_home_ip()
+        connect_ip = self.get_connect_ip()
         self.terraform_merge_env_and_secrets()
         self.terraform_pull_state()
         self.terraform_copy_resources(include_dirs)
         os.chdir(self.tmppath)
-        return home_ip
+        return connect_ip
 
     def terraform_deploy(self):
         """
@@ -382,8 +445,8 @@ class Cloudy:
 
         Remote state is pulled from S3
         """
-        home_ip = self.terraform_prep()
-        deploy = " --var 'directory_password=" + self.directorypassword + "' -var 'home_ip=" + home_ip + "'"
+        connect_ip = self.terraform_prep()
+        deploy = " --var 'directory_password=" + self.directorypassword + "' -var 'connect_ip=" + connect_ip + "'"
         self.subp("terraform init " + deploy)
         self.subp("terraform plan " + deploy)
         self.subp("terraform apply --auto-approve " + deploy)
@@ -402,8 +465,8 @@ class Cloudy:
 
         Remote state is pulled from S3
         """
-        home_ip = self.terraform_prep()
-        deploy = " --var 'directory_password=" + self.directorypassword + "' -var 'home_ip=" + home_ip + "'"
+        connect_ip = self.terraform_prep()
+        deploy = " --var 'directory_password=" + self.directorypassword + "' -var 'connect_ip=" + connect_ip + "'"
         self.subp("terraform init " + deploy)
         self.subp("terraform destroy -auto-approve " + deploy)
         self.terraform_push_state()
@@ -411,7 +474,7 @@ class Cloudy:
 
 
     def terraform_dns(self):
-        home_ip = self.terraform_prep()
+        connect_ip = self.terraform_prep()
         for directory in self.ds.describe_directories()['DirectoryDescriptions']:
             return(directory['Name'])
 
@@ -545,24 +608,30 @@ class Cloudy:
         self.vprint('\tInstalled terragrunt')
         print('\tInstalled all tools')
 
+    def print_key(self, file, type):
+        with open(file,"rb") as f:
+           contents = f.read().replace(b"\n",b"\\n")
+        keystr = contents.decode("utf-8").replace("b'","'")
+        if type == 'private':
+            print('"PRIVATEKEY": "' + keystr + '",')
+        else:
+            print('"PUBLICKEY": "' + keystr + '"')
+
+    def list_rds_instances(self):
+        os.system("aws rds describe-db-instances --query 'DBInstances[*].[DBInstanceIdentifier]' --region us-east-1 --output text")
+
     def generate_ssh_keys(self):
         """Generate a Key Pair and print them here to add them to config.json"""
-        replace = "awk '{printf \"%s\\\\n\", $0}' /tmp/terraform"
-        # file1 = "/tmp/file"
-        # with open(file1,"rb") as f:
-        #    contents = f.read().replace(b"\n",b"\\n\n")
-        # with open(file1+".bak","wb") as f:
-        #    f.write(contents)
-        # os.remove(file1)
-        # os.rename(file1+".bak",file1)
-        os.remove('/tmp/terraform*')
-        # os.system("ssh-keygen -f /tmp/terraform -t rsa -N '' > /dev/null 2>&1")
+        # replace = "awk '{printf \"%s\\\\n\", $0}' /tmp/terraform"
         # os.system(replace)
-        # print('\n')
-        # os.system('cat /tmp/terraform.pub')
-        # print('Copy private key to S3 Bucket')
-        # self.copy_file_to_s3_bucket(self.config['STATE'][self.env], '/tmp/terraform', 'terraform.pem')
-        # os.system('rm -f /tmp/terraform*')
+        self.delete_files_regex('/tmp', '^terraform.*')    # Remove any old keys
+        os.system("ssh-keygen -f /tmp/terraform -t rsa -N '' > /dev/null 2>&1")
+        self.print_key('/tmp/terraform', 'private') # Print Private key as string with newlines
+        self.print_key('/tmp/terraform.pub', 'public')
+        print('Copy private key to S3 Bucket')
+        self.s3 = boto3.resource('s3')
+        self.create_s3_bucket(self.config['STATE']['base'])
+        self.copy_file_to_s3_bucket(self.config['STATE']['base'], '/tmp/terraform', 'terraform.pem')
 
     def generate_ssh_keys_native(self):
         from OpenSSL import crypto

@@ -1,13 +1,13 @@
 import click
 import json
 
-from mccloud.tools import *
+from mccloud.config import *
+from mccloud.cloudy import Cloudy
 from mccloud.version import VERSION
 from mccloud.constants import *
 
 from mccloud.commands.packer import packer
 from mccloud.commands.terraform import terraform
-from mccloud.commands.example import example
 from mccloud.commands.connect import connect
 from mccloud.commands.utils import utils
 from mccloud.commands.setup import setup

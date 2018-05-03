@@ -1,9 +1,8 @@
 import click
 import json
 
-from mccloud.tools import *
-from mccloud.version import VERSION
-from mccloud.constants import *
+from mccloud.config import *
+from mccloud.cloudy import Cloudy
 
 #from .envs import *
 
@@ -13,13 +12,13 @@ c = Cloudy(config)
 @click.group(chain=True)
 def connect():
     """This option let's you connect to an AWS instance
-    
+
     Examples:
 
     mccloud connect verbose prod group jump
 
     mccloud connect verbose prod name hostname
-    
+
     """
     pass
 

@@ -1,9 +1,8 @@
 import click
 import json
 
-from mccloud.tools import *
-from mccloud.version import VERSION
-from mccloud.constants import *
+from mccloud.config import *
+from mccloud.cloudy import Cloudy
 
 #from .envs import *
 
@@ -51,6 +50,7 @@ def deploy(ami = None, env = None):
     global c
     if not env:
         print('You must pass an environment!')
+        print('Example:\n\tmccloud packer deploy --env dev --ami dns')
         exit()
     if ami: c.ami = ami
     c.env = env

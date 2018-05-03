@@ -1,9 +1,8 @@
 import click
 import json
 
-from mccloud.tools import *
-from mccloud.version import VERSION
-from mccloud.constants import *
+from mccloud.config import *
+from mccloud.cloudy import Cloudy
 
 config = read_config()
 c = Cloudy(config)
@@ -48,9 +47,9 @@ def instances(env):
 
     Pass verbose:
 
-    To list all instances with verbosity under the custom profile:
+    To list all running instances with verbosity under the custom profile:
 
-    mccloud utils verbose listec2 --env custom
+    mccloud utils verbose instances --env custom
 
     """
     global c
@@ -58,7 +57,23 @@ def instances(env):
         c.env = 'base'
     else:
         c.env = env
-    c.list_ec2()
+    c.list_ec2_instances()
+
+@utils.command()
+@click.option('--env')
+@click.option('--id')
+def runningami(env, id):
+    """Create an AMI from a running instance
+
+    mccloud utils verbose runningami --env dev --id i-00a6ab899adbfcc2f
+
+    """
+    global c
+    if not env:
+        c.env = 'base'
+    else:
+        c.env = env
+    c.build_ami_from_running_instance(id)
 
 @utils.command()
 def envs():
@@ -81,3 +96,14 @@ def keys():
     """
     global c
     c.generate_ssh_keys()
+
+@utils.command()
+@click.option('--env')
+@click.option('--id')
+def createinstances(env, id):
+    global c
+    if not env:
+        c.env = 'base'
+    else:
+        c.env = env
+    c.launch_instance_from_ami(id)

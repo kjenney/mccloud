@@ -1,9 +1,8 @@
 import click
 import json
 
-from mccloud.tools import *
-from mccloud.version import VERSION
-from mccloud.constants import *
+from mccloud.config import *
+from mccloud.cloudy import Cloudy
 
 config = read_config()
 c = Cloudy(config)

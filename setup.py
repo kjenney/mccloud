@@ -15,14 +15,14 @@ def read(*filenames, **kwargs):
 
 setup(
     name='mccloud',
-    version='0.0.11',
+    version='0.0.13',
     license='Apache Software License',
     url='http://github.com/kjenney/mccloud',
     author='Ken Jenney',
     author_email='me@kenjenney.com',
     description='Administer AWS',
     long_description=read('README.rst'),
-    packages=['mccloud'],
+    packages=find_packages(),
     python_requires='>=3',
     install_requires=[
         'Click',

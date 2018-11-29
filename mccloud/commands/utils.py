@@ -107,3 +107,19 @@ def createinstances(env, id):
     else:
         c.env = env
     c.launch_instance_from_ami(id)
+
+@utils.command()
+@click.option('--env')
+@click.option('--bucket')
+@click.option('--string')
+def searchs3bucket(env, bucket, string):
+    """Search an S3 Bucket for specific files"""
+    global c
+    if not env:
+        c.env = 'base'
+    else:
+        c.env = env
+        if string:
+            c.searchs3bucket(bucket, string)
+        else:
+            print('A search string is required')

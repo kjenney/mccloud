@@ -449,8 +449,8 @@ class Cloudy:
         deploy = " --var 'directory_password=" + self.directorypassword + "' -var 'connect_ip=" + connect_ip + "'"
         self.subp("terraform init " + deploy)
         self.subp("terraform plan " + deploy)
-        self.subp("terraform apply --auto-approve " + deploy)
-        self.terraform_push_state()
+        #self.subp("terraform apply --auto-approve " + deploy)
+        #self.terraform_push_state()
         print('------- Deploy Complete -------\n')
         print('------- Adding the Private Key to the Local SSH Agent -------\n')
         self.add_private_key_to_ssh_agent()
@@ -639,3 +639,15 @@ class Cloudy:
         k.generate_key(crypto.TYPE_RSA, 4096)
         print(crypto.dump_privatekey(crypto.FILETYPE_PEM, k))
         print(crypto.dump_publickey(crypto.FILETYPE_PEM, k))
+
+    def searchs3bucket(self, bucket, string):
+        """Get a list of keys in an S3 bucket."""
+        keys = []
+        self.initialize_env()
+        client = boto3.client('s3', region_name=self.region)
+        resp = client.list_objects_v2(Bucket=bucket)
+        for obj in resp['Contents']:
+            if string in obj['Key']:
+                print(obj['Key'])
+            #keys.append(obj['Key'])
+        #return keys

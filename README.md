@@ -25,3 +25,14 @@ Config is pulled from config.json in the working directory. All secrets are in t
 State refers to the S3 bucket names.
 Private and public keys are used for the AWS key pair.
 Vault Password will be used to deccrypt Ansible secrets.
+
+
+## Local Development
+
+```
+python3 setup.py sdist bdist_wheel
+```
+
+## Uploading
+
+```twine upload dist/*```

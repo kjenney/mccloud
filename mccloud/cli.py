@@ -7,6 +7,7 @@ from mccloud.version import VERSION
 from mccloud.constants import *
 
 from mccloud.commands.packer import packer
+from mccloud.commands.ansible import ansible
 from mccloud.commands.terraform import terraform
 from mccloud.commands.connect import connect
 from mccloud.commands.utils import utils
@@ -22,6 +23,7 @@ def version():
     print('version: ' + VERSION)
 
 entry.add_command(packer)
+entry.add_command(ansible)
 entry.add_command(terraform)
 entry.add_command(connect)
 entry.add_command(utils)

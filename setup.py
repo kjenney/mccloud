@@ -15,7 +15,7 @@ def read(*filenames, **kwargs):
 
 setup(
     name='mccloud',
-    version='0.0.13',
+    version='0.0.14',
     license='Apache Software License',
     url='http://github.com/kjenney/mccloud',
     author='Ken Jenney',
@@ -26,6 +26,7 @@ setup(
     python_requires='>=3',
     install_requires=[
         'Click',
+        'pandas'
     ],
     entry_points = {
         'console_scripts': ['mccloud = mccloud.cli:entry'],

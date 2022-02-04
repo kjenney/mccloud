@@ -6,7 +6,7 @@ mccloud
 This script was created to support management of an AWS VPC
 
 Installation Instructions
-------------------------
+-------------------------
 
 .. code:: bash
 
